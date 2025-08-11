@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sine Wave Synthesizer with Spectrum Analyzer</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; }
+        textarea { width: 95%; height: 200px; padding: 10px; font-size: 16px; margin-bottom: 10px; }
+        button { padding: 10px 20px; font-size: 16px; margin-right: 10px; }
+        canvas { border: 1px solid #ccc; margin-top: 20px; background-color: #f5f5f5; }
+    </style>
+</head>
+<body>
+
+    <h1>Sine Wave Synthesizer with Spectrum Analyzer</h1>
+    <p>
+        一行に一つの音データを入力してください。<br>
+        書式：<br>
+        - **正弦波:** 周波数(Hz),r=音量(0.0-1.0)<br>
+        - **ノイズ:** 最小周波数(Hz)_最大周波数(Hz),r=音量(0.0-1.0)<br>
+        例: <br>
+        440,r=0.5<br>
+        440_880,r=0.1
+    </p>
+
+    <textarea id="dataInput">
+514.0988372,r=0.9
+257.049186,r=0.7
+440_880,r=0.1
+    </textarea>
+    
+    <button id="playButton">再生</button>
+    <button id="stopButton" disabled>停止</button>
+    
+    <canvas id="analyzerCanvas" width="800" height="200"></canvas>
+
+    <script>
+        let audioCtx;
+        let sources = [];
+        let analyser;
+        let canvasCtx;
+        let animationFrame;
+
+        document.getElementById('playButton').addEventListener('click', playSound);
+        document.getElementById('stopButton').addEventListener('click', stopSound);
+
+        function setupAudioContext() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (!analyser) {
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 2048;
+                analyser.connect(audioCtx.destination);
+            }
+        }
+
+        function playSound() {
+            if (sources.length > 0) return;
+            setupAudioContext();
+
+            const inputData = document.getElementById('dataInput').value.trim().split('\n');
+            const masterGainNode = audioCtx.createGain();
+            masterGainNode.gain.value = 0.5;
+            masterGainNode.connect(analyser); // AnalyserNodeに接続
+
+            sources = [];
+
+            inputData.forEach(line => {
+                const parts = line.split(',r=');
+                if (parts.length === 2) {
+                    const params = parts[0].trim().split('_');
+                    const gainValue = parseFloat(parts[1].trim());
+                    if (params.length === 1 && !isNaN(parseFloat(params[0]))) {
+                        const frequency = parseFloat(params[0]);
+                        const oscillator = audioCtx.createOscillator();
+                        const gainNode = audioCtx.createGain();
+                        oscillator.type = 'sine';
+                        oscillator.frequency.value = frequency;
+                        gainNode.gain.value = gainValue;
+                        oscillator.connect(gainNode);
+                        gainNode.connect(masterGainNode);
+                        oscillator.start();
+                        sources.push(oscillator);
+                    } else if (params.length === 2 && !isNaN(parseFloat(params[0])) && !isNaN(parseFloat(params[1]))) {
+                        const minFreq = parseFloat(params[0]);
+                        const maxFreq = parseFloat(params[1]);
+                        const bufferSize = audioCtx.sampleRate * 2;
+                        const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                        const output = noiseBuffer.getChannelData(0);
+                        for (let i = 0; i < bufferSize; i++) {
+                            output[i] = Math.random() * 2 - 1;
+                        }
+                        const noiseSource = audioCtx.createBufferSource();
+                        noiseSource.buffer = noiseBuffer;
+                        noiseSource.loop = true;
+                        const filter = audioCtx.createBiquadFilter();
+                        filter.type = 'bandpass';
+                        filter.frequency.value = (minFreq + maxFreq) / 2;
+                        filter.Q.value = filter.frequency.value / (maxFreq - minFreq);
+                        const gainNode = audioCtx.createGain();
+                        gainNode.gain.value = gainValue;
+                        noiseSource.connect(filter);
+                        filter.connect(gainNode);
+                        gainNode.connect(masterGainNode);
+                        noiseSource.start();
+                        sources.push(noiseSource);
+                    }
+                }
+            });
+
+            document.getElementById('playButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
+            drawSpectrum();
+        }
+
+        function stopSound() {
+            sources.forEach(source => {
+                if (source.stop) source.stop();
+            });
+            sources = [];
+            cancelAnimationFrame(animationFrame);
+            if (canvasCtx) {
+                canvasCtx.clearRect(0, 0, 800, 200);
+            }
+            document.getElementById('playButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+        }
+
+        function drawSpectrum() {
+            if (!analyser) return;
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            if (!canvasCtx) {
+                const canvas = document.getElementById('analyzerCanvas');
+                canvasCtx = canvas.getContext('2d');
+            }
+
+            canvasCtx.clearRect(0, 0, 800, 200);
+
+            analyser.getByteFrequencyData(dataArray);
+
+            const barWidth = (800 / bufferLength) * 2.5;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                const barHeight = dataArray[i];
+                canvasCtx.fillStyle = 'rgb(' + (barHeight + 100) + ',50,50)';
+                canvasCtx.fillRect(x, 200 - barHeight / 2, barWidth, barHeight / 2);
+                x += barWidth + 1;
+            }
+
+            animationFrame = requestAnimationFrame(drawSpectrum);
+        }
+    </script>
+</body>
+</html>
