@@ -27,8 +27,7 @@
     <textarea id="dataInput">
 514.0988372,r=0.9
 257.049186,r=0.7
-440_880,r=0.1
-    </textarea>
+440_880,r=0.1</textarea>
     
     <button id="playButton">再生</button>
     <button id="stopButton" disabled>停止</button>
@@ -42,19 +41,76 @@
         let canvasCtx;
         let animationFrame;
 
+        const FFT = (function() {
+            function FFT(size) {
+                this.size = size;
+                this.csize = size / 2;
+                this.size_log = Math.log2(size);
+            }
+
+            FFT.prototype.transform = function(re, im) {
+                let m = this.size_log;
+                let n = this.size;
+                let csize = this.csize;
+
+                for (let k = 0; k < n; k++) {
+                    let j = 0;
+                    for (let i = 0; i < m; i++) {
+                        j |= (((k >> i) & 1) << (m - 1 - i));
+                    }
+                    if (j > k) {
+                        let temp = re[k];
+                        re[k] = re[j];
+                        re[j] = temp;
+                        temp = im[k];
+                        im[k] = im[j];
+                        im[j] = temp;
+                    }
+                }
+
+                let a, b, c, s, angle, len, len_csize, len_csize_s, tr, ti;
+
+                for (let h = 2; h <= n; h <<= 1) {
+                    angle = -2 * Math.PI / h;
+                    len_csize_s = Math.cos(angle);
+                    len_csize = Math.sin(angle);
+                    a = 1;
+                    b = 0;
+                    for (let j = 0; j < h / 2; j++) {
+                        for (let k = j; k < n; k += h) {
+                            c = re[k + h / 2] * a - im[k + h / 2] * b;
+                            s = re[k + h / 2] * b + im[k + h / 2] * a;
+                            re[k + h / 2] = re[k] - c;
+                            im[k + h / 2] = im[k] - s;
+                            re[k] += c;
+                            im[k] += s;
+                        }
+                        tr = a;
+                        a = a * len_csize_s - b * len_csize;
+                        b = tr * len_csize + b * len_csize_s;
+                    }
+                }
+            };
+
+            FFT.prototype.inverseTransform = function(re, im) {
+                let n = this.size;
+                im = im.map(val => -val);
+                this.transform(re, im);
+                im = im.map(val => -val);
+                re = re.map(val => val / n);
+                im = im.map(val => val / n);
+                return [re, im];
+            };
+
+            return FFT;
+        })();
+
         document.getElementById('playButton').addEventListener('click', playSound);
         document.getElementById('stopButton').addEventListener('click', stopSound);
 
-        async function setupAudioContext() {
+        function setupAudioContext() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                try {
-                    // AudioWorkletの追加
-                    await audioCtx.audioWorklet.addModule('noise-processor.js');
-                } catch (e) {
-                    console.error("AudioWorkletのロードに失敗しました:", e);
-                    alert("お使いのブラウザはAudioWorkletに対応していないか、またはファイルが見つかりません。");
-                }
             }
             if (!analyser) {
                 analyser = audioCtx.createAnalyser();
@@ -64,12 +120,66 @@
             }
         }
 
+        async function createBandpassNoiseBuffer(minFreq, maxFreq, gainValue) {
+            const sampleRate = audioCtx.sampleRate;
+            const fftSize = 4096;
+            const fft = new FFT(fftSize);
+            
+            const re = new Float32Array(fftSize);
+            const im = new Float32Array(fftSize).fill(0);
+            
+            for (let i = 0; i < fftSize; i++) {
+                re[i] = Math.random() * 2 - 1;
+            }
+
+            fft.transform(re, im);
+
+            const freqResolution = sampleRate / fftSize;
+            const minBin = Math.floor(minFreq / freqResolution);
+            const maxBin = Math.floor(maxFreq / freqResolution);
+            const bandWidthBins = maxBin - minBin;
+
+            for (let i = 0; i < fftSize / 2; i++) {
+                if (i < minBin || i > maxBin) {
+                    re[i] = 0;
+                    im[i] = 0;
+                    re[fftSize - i] = 0;
+                    im[fftSize - i] = 0;
+                }
+            }
+
+            const [outRe] = fft.inverseTransform(re, im);
+            
+            const noiseBuffer = audioCtx.createBuffer(1, fftSize, sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+
+            let maxAmp = 0;
+            for (let i = 0; i < fftSize; i++) {
+                if (Math.abs(outRe[i]) > maxAmp) {
+                    maxAmp = Math.abs(outRe[i]);
+                }
+            }
+
+            if (maxAmp > 0) {
+                // ここで帯域幅の平方根を乗算して補正
+                const adjustedGain = (bandWidthBins > 0) ? gainValue * Math.sqrt(bandWidthBins) : 0;
+                for (let i = 0; i < fftSize; i++) {
+                    output[i] = (outRe[i] / maxAmp) * adjustedGain;
+                }
+            } else {
+                for (let i = 0; i < fftSize; i++) {
+                    output[i] = 0;
+                }
+            }
+
+            return noiseBuffer;
+        }
+
         async function playSound() {
             if (sources.length > 0) return;
-            await setupAudioContext();
+            setupAudioContext();
 
             document.getElementById('playButton').disabled = true;
-            document.getElementById('stopButton').disabled = false;
 
             const inputData = document.getElementById('dataInput').value.trim().split('\n');
             const masterGainNode = audioCtx.createGain();
@@ -100,20 +210,26 @@
                         const minFreq = parseFloat(params[0]);
                         const maxFreq = parseFloat(params[1]);
 
-                        const noiseProcessor = new AudioWorkletNode(audioCtx, 'noise-processor', {
-                            outputChannelCount: [1]
-                        });
-                        
-                        noiseProcessor.parameters.get('minFrequency').value = minFreq;
-                        noiseProcessor.parameters.get('maxFrequency').value = maxFreq;
-                        noiseProcessor.parameters.get('gain').value = gainValue;
+                        const numBands = 4;
+                        const bandWidth = (maxFreq - minFreq) / numBands;
 
-                        noiseProcessor.connect(masterGainNode);
-                        sources.push(noiseProcessor);
+                        for (let i = 0; i < numBands; i++) {
+                            const currentMinFreq = minFreq + i * bandWidth;
+                            const currentMaxFreq = minFreq + (i + 1) * bandWidth;
+                            const buffer = await createBandpassNoiseBuffer(currentMinFreq, currentMaxFreq, gainValue / numBands);
+                            const noiseSource = audioCtx.createBufferSource();
+                            noiseSource.buffer = buffer;
+                            noiseSource.loop = true;
+                            noiseSource.connect(masterGainNode);
+                            noiseSource.start();
+                            sources.push(noiseSource);
+                        }
                     }
                 }
             }
+
             document.getElementById('playButton').disabled = false;
+            document.getElementById('stopButton').disabled = false;
             drawSpectrum();
         }
 
@@ -121,8 +237,6 @@
             sources.forEach(source => {
                 if (source && typeof source.stop === 'function') {
                     source.stop();
-                } else if (source && typeof source.disconnect === 'function') {
-                    source.disconnect();
                 }
             });
             sources = [];
