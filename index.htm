@@ -25,9 +25,10 @@
     </p>
 
     <textarea id="dataInput">
-27.5,r=0.9
-440,r=0.7
-440_880,r=0.1</textarea>
+514.0988372,r=0.9
+257.049186,r=0.7
+440_880,r=0.1
+    </textarea>
     
     <button id="playButton">再生</button>
     <button id="stopButton" disabled>停止</button>
@@ -44,9 +45,16 @@
         document.getElementById('playButton').addEventListener('click', playSound);
         document.getElementById('stopButton').addEventListener('click', stopSound);
 
-        function setupAudioContext() {
+        async function setupAudioContext() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                try {
+                    // AudioWorkletの追加
+                    await audioCtx.audioWorklet.addModule('noise-processor.js');
+                } catch (e) {
+                    console.error("AudioWorkletのロードに失敗しました:", e);
+                    alert("お使いのブラウザはAudioWorkletに対応していないか、またはファイルが見つかりません。");
+                }
             }
             if (!analyser) {
                 analyser = audioCtx.createAnalyser();
@@ -58,9 +66,10 @@
 
         async function playSound() {
             if (sources.length > 0) return;
-            setupAudioContext();
+            await setupAudioContext();
 
             document.getElementById('playButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
 
             const inputData = document.getElementById('dataInput').value.trim().split('\n');
             const masterGainNode = audioCtx.createGain();
@@ -91,54 +100,20 @@
                         const minFreq = parseFloat(params[0]);
                         const maxFreq = parseFloat(params[1]);
 
-                        const bufferSize = audioCtx.sampleRate * 2;
-                        const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-                        const output = noiseBuffer.getChannelData(0);
+                        const noiseProcessor = new AudioWorkletNode(audioCtx, 'noise-processor', {
+                            outputChannelCount: [1]
+                        });
                         
-                        for (let i = 0; i < bufferSize; i++) {
-                            output[i] = Math.random() * 2 - 1;
-                        }
-                        
-                        const noiseSource = audioCtx.createBufferSource();
-                        noiseSource.buffer = noiseBuffer;
-                        noiseSource.loop = true;
+                        noiseProcessor.parameters.get('minFrequency').value = minFreq;
+                        noiseProcessor.parameters.get('maxFrequency').value = maxFreq;
+                        noiseProcessor.parameters.get('gain').value = gainValue;
 
-                        const gainNode = audioCtx.createGain();
-                        gainNode.gain.value = gainValue;
-                        
-                        let lastNode = noiseSource;
-                        const numFilters = 8;
-                        const QValue = 1;
-
-                        for (let i = 0; i < numFilters; i++) {
-                            const highpassFilter = audioCtx.createBiquadFilter();
-                            highpassFilter.type = 'highpass';
-                            highpassFilter.frequency.value = minFreq;
-                            highpassFilter.Q.value = QValue;
-                            lastNode.connect(highpassFilter);
-                            lastNode = highpassFilter;
-                        }
-
-                        for (let i = 0; i < numFilters; i++) {
-                            const lowpassFilter = audioCtx.createBiquadFilter();
-                            lowpassFilter.type = 'lowpass';
-                            lowpassFilter.frequency.value = maxFreq;
-                            lowpassFilter.Q.value = QValue;
-                            lastNode.connect(lowpassFilter);
-                            lastNode = lowpassFilter;
-                        }
-
-                        lastNode.connect(gainNode);
-                        gainNode.connect(masterGainNode);
-                        
-                        noiseSource.start();
-                        sources.push(noiseSource);
+                        noiseProcessor.connect(masterGainNode);
+                        sources.push(noiseProcessor);
                     }
                 }
             }
-
             document.getElementById('playButton').disabled = false;
-            document.getElementById('stopButton').disabled = false;
             drawSpectrum();
         }
 
@@ -146,6 +121,8 @@
             sources.forEach(source => {
                 if (source && typeof source.stop === 'function') {
                     source.stop();
+                } else if (source && typeof source.disconnect === 'function') {
+                    source.disconnect();
                 }
             });
             sources = [];
