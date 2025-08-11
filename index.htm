@@ -25,10 +25,9 @@
     </p>
 
     <textarea id="dataInput">
-440,r=1
-476.666,r=0.7
-440_1760,r=0.1
-    </textarea>
+27.5,r=0.9
+440,r=0.7
+440_880,r=0.1</textarea>
     
     <button id="playButton">再生</button>
     <button id="stopButton" disabled>停止</button>
@@ -109,7 +108,7 @@
                         
                         let lastNode = noiseSource;
                         const numFilters = 8;
-                        const QValue = 1; // フィルターの数を増やすことで急峻さを出す
+                        const QValue = 1;
 
                         for (let i = 0; i < numFilters; i++) {
                             const highpassFilter = audioCtx.createBiquadFilter();
@@ -138,7 +137,7 @@
                 }
             }
 
-            document.getElementById('playButton').disabled = true;
+            document.getElementById('playButton').disabled = false;
             document.getElementById('stopButton').disabled = false;
             drawSpectrum();
         }
