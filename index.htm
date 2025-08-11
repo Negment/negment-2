@@ -25,9 +25,9 @@
     </p>
 
     <textarea id="dataInput">
-514.0988372,r=0.9
-257.049186,r=0.7
-440_880,r=0.1
+440,r=1
+476.666,r=0.7
+440_1760,r=0.1
     </textarea>
     
     <button id="playButton">再生</button>
@@ -52,26 +52,30 @@
             if (!analyser) {
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.8;
                 analyser.connect(audioCtx.destination);
             }
         }
 
-        function playSound() {
+        async function playSound() {
             if (sources.length > 0) return;
             setupAudioContext();
+
+            document.getElementById('playButton').disabled = true;
 
             const inputData = document.getElementById('dataInput').value.trim().split('\n');
             const masterGainNode = audioCtx.createGain();
             masterGainNode.gain.value = 0.5;
-            masterGainNode.connect(analyser); // AnalyserNodeに接続
+            masterGainNode.connect(analyser);
 
             sources = [];
 
-            inputData.forEach(line => {
+            for (const line of inputData) {
                 const parts = line.split(',r=');
                 if (parts.length === 2) {
                     const params = parts[0].trim().split('_');
                     const gainValue = parseFloat(parts[1].trim());
+
                     if (params.length === 1 && !isNaN(parseFloat(params[0]))) {
                         const frequency = parseFloat(params[0]);
                         const oscillator = audioCtx.createOscillator();
@@ -83,32 +87,56 @@
                         gainNode.connect(masterGainNode);
                         oscillator.start();
                         sources.push(oscillator);
+
                     } else if (params.length === 2 && !isNaN(parseFloat(params[0])) && !isNaN(parseFloat(params[1]))) {
                         const minFreq = parseFloat(params[0]);
                         const maxFreq = parseFloat(params[1]);
+
                         const bufferSize = audioCtx.sampleRate * 2;
                         const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
                         const output = noiseBuffer.getChannelData(0);
+                        
                         for (let i = 0; i < bufferSize; i++) {
                             output[i] = Math.random() * 2 - 1;
                         }
+                        
                         const noiseSource = audioCtx.createBufferSource();
                         noiseSource.buffer = noiseBuffer;
                         noiseSource.loop = true;
-                        const filter = audioCtx.createBiquadFilter();
-                        filter.type = 'bandpass';
-                        filter.frequency.value = (minFreq + maxFreq) / 2;
-                        filter.Q.value = filter.frequency.value / (maxFreq - minFreq);
+
                         const gainNode = audioCtx.createGain();
                         gainNode.gain.value = gainValue;
-                        noiseSource.connect(filter);
-                        filter.connect(gainNode);
+                        
+                        let lastNode = noiseSource;
+                        const numFilters = 8;
+                        const QValue = 1; // フィルターの数を増やすことで急峻さを出す
+
+                        for (let i = 0; i < numFilters; i++) {
+                            const highpassFilter = audioCtx.createBiquadFilter();
+                            highpassFilter.type = 'highpass';
+                            highpassFilter.frequency.value = minFreq;
+                            highpassFilter.Q.value = QValue;
+                            lastNode.connect(highpassFilter);
+                            lastNode = highpassFilter;
+                        }
+
+                        for (let i = 0; i < numFilters; i++) {
+                            const lowpassFilter = audioCtx.createBiquadFilter();
+                            lowpassFilter.type = 'lowpass';
+                            lowpassFilter.frequency.value = maxFreq;
+                            lowpassFilter.Q.value = QValue;
+                            lastNode.connect(lowpassFilter);
+                            lastNode = lowpassFilter;
+                        }
+
+                        lastNode.connect(gainNode);
                         gainNode.connect(masterGainNode);
+                        
                         noiseSource.start();
                         sources.push(noiseSource);
                     }
                 }
-            });
+            }
 
             document.getElementById('playButton').disabled = true;
             document.getElementById('stopButton').disabled = false;
@@ -117,13 +145,18 @@
 
         function stopSound() {
             sources.forEach(source => {
-                if (source.stop) source.stop();
+                if (source && typeof source.stop === 'function') {
+                    source.stop();
+                }
             });
             sources = [];
+            
             cancelAnimationFrame(animationFrame);
+            
             if (canvasCtx) {
                 canvasCtx.clearRect(0, 0, 800, 200);
             }
+            
             document.getElementById('playButton').disabled = false;
             document.getElementById('stopButton').disabled = true;
         }
